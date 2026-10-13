@@ -1,0 +1,6 @@
+{
+  "name": "Smart Campus Lost & Found",
+  "description": "Privacy-first college lost and found platform with independent dual verification, smart matching, secure handover, and role-based recovery workflow.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

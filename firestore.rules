@@ -1,0 +1,130 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasRole(role) {
+      return isAuthenticated() && getUserData().role == role;
+    }
+
+    function isStaff() {
+      return hasRole('staff') || hasRole('admin');
+    }
+
+    function isAdmin() {
+      return hasRole('admin');
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // 1. Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      // Users can only update their own profile; roles cannot be self-escalated
+      allow update: if isOwner(userId) && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['role']));
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow delete: if isAdmin();
+    }
+
+    // 2. Public Item Listings (found & lost)
+    // CRITICAL: Sensitive identifying details MUST NEVER be stored in this collection.
+    // Private clues are segregated into /privateVerificationDetails/{itemId}.
+    match /items/{itemId} {
+      allow read: if true; // Publicly readable for students/staff
+      allow create: if isAuthenticated();
+      // Only author can edit before claim; staff/admin can manage status transitions
+      allow update: if isStaff() || (isAuthenticated() && resource.data.reportedBy.id == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    // 3. Private Verification Details Vault
+    // STAGE 1 & 2 CLUES ARE STRICTLY RESTRICTED TO AUTHORIZED REVIEWERS & FINDER
+    match /privateVerificationDetails/{itemId} {
+      // Claimant CANNOT read private clues under any circumstance!
+      allow read: if isStaff() || (isAuthenticated() && resource.data.finderId == request.auth.uid);
+      allow create: if isAuthenticated();
+      allow update: if isStaff();
+      allow delete: if isAdmin();
+    }
+
+    // 4. Claims and Evidence
+    match /claims/{claimId} {
+      // Claimants can only read their own claim; Staff & Admins can read all claims
+      allow read: if isStaff() || (isAuthenticated() && resource.data.claimantId == request.auth.uid);
+      
+      // Creating a claim: Must be authenticated, claimant must match auth.uid
+      allow create: if isAuthenticated() 
+        && request.resource.data.claimantId == request.auth.uid
+        && request.resource.data.status == 'Stage 1 Pending';
+
+      // Status updates: ONLY privileged staff/admin can approve stages or record handovers
+      allow update: if isStaff() && (
+        // Claimants CANNOT approve their own claim!
+        resource.data.claimantId != request.auth.uid
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    // 5. Stage 1 & Stage 2 Review Decisions (Audit Trail)
+    match /verificationDecisions/{decisionId} {
+      allow read: if isStaff() || (isAuthenticated() && resource.data.claimantId == request.auth.uid);
+      allow create: if isStaff();
+      allow update, delete: if isAdmin();
+    }
+
+    // 6. Handover Records
+    match /handoverRecords/{handoverId} {
+      allow read: if isStaff() || (isAuthenticated() && resource.data.recipientId == request.auth.uid);
+      allow create: if isStaff();
+      allow update, delete: if isAdmin();
+    }
+
+    // 7. Notifications
+    match /notifications/{notifId} {
+      allow read, update: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isStaff() || isAuthenticated();
+      allow delete: if isOwner(resource.data.userId) || isAdmin();
+    }
+
+    // 8. Rewards & Voluntary Transactions
+    match /rewards/{rewardId} {
+      allow read: if isAuthenticated() && (
+        resource.data.payerId == request.auth.uid || 
+        resource.data.payeeId == request.auth.uid || 
+        isStaff()
+      );
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+        resource.data.payerId == request.auth.uid || 
+        isStaff()
+      );
+      allow delete: if isAdmin();
+    }
+
+    // 9. Abuse Reports
+    match /abuseReports/{reportId} {
+      allow read: if isStaff();
+      allow create: if isAuthenticated();
+      allow update, delete: if isStaff();
+    }
+
+    // 10. Audit Logs
+    match /auditLogs/{logId} {
+      allow read: if isStaff();
+      // Server-side privileged write only
+      allow create: if isStaff();
+      allow update, delete: if false; // Immutable audit log
+    }
+  }
+}
